@@ -53,10 +53,18 @@ mcp = FastMCP(
         "Use these tools to search, add, and manage media."
     ),
     # DNS rebinding protection is enabled by default for HTTP/SSE transports.
-    # If you front the server with a reverse proxy or expose it under a custom
-    # hostname, configure the allowed hosts via TransportSecuritySettings
-    # (e.g. allowed_hosts=["arrstack-mcp.example.com"]). See README "Security".
-    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True),
+    # If you front the server with a reverse proxy under a custom hostname,
+    # set MCP_ALLOWED_HOSTS (comma-separated) to whitelist the Host headers
+    # your proxy will forward — e.g. "arrstack-mcp.example.com,127.0.0.1".
+    # See README "Security".
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[
+            h.strip()
+            for h in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",")
+            if h.strip()
+        ] or None,
+    ),
 )
 
 # ── HTTP helpers ──
