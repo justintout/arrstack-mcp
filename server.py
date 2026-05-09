@@ -1,5 +1,5 @@
 """
-arrstack-mcp — MCP server for Sonarr, Radarr, Prowlarr, qBittorrent & Jellyfin.
+arrstack-mcp — MCP server for Sonarr, Radarr, Prowlarr, qBittorrent, Jellyfin & Bookshelf.
 
 Exposes your *arr media stack as MCP tools so any AI assistant
 (Claude Desktop, Cursor, VS Code Copilot, OpenClaw, etc.) can
@@ -34,12 +34,15 @@ PROWLARR_URL = os.environ.get("PROWLARR_URL", "").rstrip("/")
 PROWLARR_API_KEY = os.environ.get("PROWLARR_API_KEY", "")
 JELLYFIN_URL = os.environ.get("JELLYFIN_URL", "").rstrip("/")
 JELLYFIN_API_KEY = os.environ.get("JELLYFIN_API_KEY", "")
+BOOKSHELF_URL = os.environ.get("BOOKSHELF_URL", "").rstrip("/")
+BOOKSHELF_API_KEY = os.environ.get("BOOKSHELF_API_KEY", "")
 
 mcp = FastMCP(
     "arrstack",
     instructions=(
         "Homelab media stack tools for Sonarr (TV), Radarr (Movies), "
-        "Prowlarr (Indexers), qBittorrent (Downloads), and Jellyfin (Streaming). "
+        "Prowlarr (Indexers), qBittorrent (Downloads), Jellyfin (Streaming), and "
+        "Bookshelf (Books — a Hardcover-flavored Readarr fork). "
         "Use these tools to search, add, and manage media."
     ),
     # DNS rebinding protection is enabled by default for HTTP/SSE transports.
@@ -177,6 +180,32 @@ def _prowlarr(path: str, method: str = "GET", json=None, params=None):
         return r.json()
     except (httpx.HTTPStatusError, httpx.RequestError) as e:
         return _http_error("prowlarr", e)
+
+
+def _bookshelf(path: str, method: str = "GET", json=None, params=None):
+    """HTTP helper for Bookshelf (a Hardcover-flavored Readarr fork; Readarr v1 API)."""
+    if not BOOKSHELF_URL:
+        return "Bookshelf is not configured. Set BOOKSHELF_URL (and BOOKSHELF_API_KEY)."
+    logger.info("bookshelf %s %s", method, path)
+    headers = {}
+    if BOOKSHELF_API_KEY:
+        headers["X-Api-Key"] = BOOKSHELF_API_KEY
+    try:
+        r = httpx.request(
+            method,
+            f"{BOOKSHELF_URL}/api/v1{path}",
+            headers=headers,
+            json=json,
+            params=params,
+            timeout=30,
+        )
+        r.raise_for_status()
+        try:
+            return r.json()
+        except (ValueError, json.JSONDecodeError):
+            return r.text
+    except (httpx.HTTPStatusError, httpx.RequestError) as e:
+        return _http_error("bookshelf", e)
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1061,11 +1090,225 @@ def jellyfin_scan_library() -> str:
         return f"❌ Failed: {e.response.status_code} — {e.response.text[:200]}"
 
 
+# ════════════════════════════════════════════════════════════════
+#  Bookshelf Tools (Hardcover-flavored Readarr fork; Readarr v1 API)
+# ════════════════════════════════════════════════════════════════
+
+
+@mcp.tool()
+def bookshelf_health() -> str:
+    """Check Bookshelf health: returns app version, build, and any active health issues."""
+    status = _bookshelf("/system/status")
+    if isinstance(status, str):
+        return status
+    health = _bookshelf("/health")
+    lines = [
+        f"App: {status.get('appName', '?')} {status.get('version', '?')}",
+        f"Branch: {status.get('branch', '?')}",
+        f"Build: {status.get('buildTime', '?')}",
+        f"Runtime: {status.get('runtimeName', '?')} {status.get('runtimeVersion', '?')}",
+    ]
+    if isinstance(health, list):
+        if not health:
+            lines.append("Health: ✅ no issues")
+        else:
+            lines.append(f"Health: ⚠️  {len(health)} issue(s)")
+            for h in health:
+                lines.append(f"  • [{h.get('type', '?')}] {h.get('source', '?')}: {h.get('message', '?')}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def bookshelf_list_authors() -> str:
+    """List all authors in Bookshelf with monitoring status, book counts, and disk usage."""
+    data = _bookshelf("/author")
+    if isinstance(data, str):
+        return data
+    lines = []
+    for a in sorted(data, key=lambda x: x.get("authorName", "")):
+        stats = a.get("statistics", {}) or {}
+        have = stats.get("bookFileCount", 0)
+        total = stats.get("bookCount", 0)
+        size_gb = stats.get("sizeOnDisk", 0) / 1e9
+        icon = "✅" if a.get("monitored") else "⏸️"
+        lines.append(
+            f"{icon} [{a.get('id', '?')}] {a.get('authorName', '?')} — "
+            f"{have}/{total} books, {size_gb:.2f} GB"
+        )
+    return "\n".join(lines) or "No authors found."
+
+
+@mcp.tool()
+def bookshelf_get_author(author_id: int) -> str:
+    """Get detailed info about a specific author by their Bookshelf ID."""
+    if author_id <= 0:
+        return "Invalid author_id."
+    a = _bookshelf(f"/author/{author_id}")
+    if isinstance(a, str):
+        return a
+    stats = a.get("statistics", {}) or {}
+    lines = [
+        f"Name: {a.get('authorName', '?')}",
+        f"Status: {a.get('status', '?')}",
+        f"Monitored: {a.get('monitored', False)}",
+        f"Books: {stats.get('bookFileCount', 0)}/{stats.get('bookCount', 0)}",
+        f"Size: {stats.get('sizeOnDisk', 0) / 1e9:.2f} GB",
+        f"Path: {a.get('path', '?')}",
+        f"Hardcover ID: {a.get('foreignAuthorId', '?')}",
+        f"Overview: {(a.get('overview') or 'N/A')[:300]}",
+    ]
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def bookshelf_search_author(term: str) -> str:
+    """Search Bookshelf's metadata source (Hardcover) for an author. Returns name and Hardcover ID."""
+    data = _bookshelf("/author/lookup", params={"term": term})
+    if isinstance(data, str):
+        return data
+    lines = []
+    for r in data[:10]:
+        overview = (r.get("overview") or "No description.")[:150].replace("\n", " ")
+        lines.append(
+            f"• {r.get('authorName', '?')} "
+            f"[hardcoverId: {r.get('foreignAuthorId', '?')}]\n  {overview}"
+        )
+    return "\n".join(lines) or "No results found."
+
+
+@mcp.tool()
+def bookshelf_search_book(term: str) -> str:
+    """Search Bookshelf's metadata source (Hardcover) for a book. Returns title, author, and IDs."""
+    data = _bookshelf("/book/lookup", params={"term": term})
+    if isinstance(data, str):
+        return data
+    lines = []
+    for r in data[:10]:
+        title = r.get("title", "?")
+        author = "?"
+        a = r.get("author")
+        if isinstance(a, dict):
+            author = a.get("authorName", "?")
+        release = (r.get("releaseDate") or "?")[:10]
+        lines.append(
+            f"• {title} — {author} ({release}) "
+            f"[bookId: {r.get('foreignBookId', '?')}]"
+        )
+    return "\n".join(lines) or "No results found."
+
+
+@mcp.tool()
+def bookshelf_list_books() -> str:
+    """List all books currently tracked in Bookshelf (title, author, monitored, page count)."""
+    data = _bookshelf("/book")
+    if isinstance(data, str):
+        return data
+    lines = []
+    for b in data:
+        title = b.get("title", "?")
+        author = "?"
+        a = b.get("author")
+        if isinstance(a, dict):
+            author = a.get("authorName", "?")
+        pages = b.get("pageCount", 0) or 0
+        icon = "✅" if b.get("monitored") else "⏸️"
+        release = (b.get("releaseDate") or "?")[:10]
+        lines.append(
+            f"{icon} [{b.get('id', '?')}] {title} — {author} ({release}, {pages}p)"
+        )
+    return "\n".join(lines) or "No books found."
+
+
+@mcp.tool()
+def bookshelf_queue() -> str:
+    """Show the current Bookshelf download queue with status and queue IDs."""
+    data = _bookshelf("/queue", params={"pageSize": 50, "includeUnknownAuthorItems": "true"})
+    if isinstance(data, str):
+        return data
+    records = data.get("records", []) if isinstance(data, dict) else []
+    lines = []
+    for r in records:
+        title = r.get("title", "?")
+        status = r.get("status", "?")
+        sizeleft = (r.get("sizeleft", 0) or 0) / 1e9
+        lines.append(f"• [queueId: {r.get('id', '?')}] {title} — {status} ({sizeleft:.2f} GB remaining)")
+    return "\n".join(lines) or "Queue is empty."
+
+
+@mcp.tool()
+def bookshelf_wanted_missing(page_size: int = 20) -> str:
+    """List books Bookshelf has flagged as missing (monitored but no file). Paged; default 20."""
+    if page_size <= 0 or page_size > 200:
+        page_size = 20
+    data = _bookshelf("/wanted/missing", params={"pageSize": page_size})
+    if isinstance(data, str):
+        return data
+    records = data.get("records", []) if isinstance(data, dict) else []
+    total = data.get("totalRecords", len(records)) if isinstance(data, dict) else len(records)
+    lines = [f"Total missing: {total} (showing {len(records)})"]
+    for r in records:
+        title = r.get("title", "?")
+        release = (r.get("releaseDate") or "?")[:10]
+        lines.append(f"• [bookId: {r.get('id', '?')}] {title} ({release})")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def bookshelf_list_quality_profiles() -> str:
+    """List all quality profiles configured in Bookshelf with their allowed qualities."""
+    data = _bookshelf("/qualityprofile")
+    if isinstance(data, str):
+        return data
+    lines = []
+    for p in data:
+        qualities = [
+            (q.get("quality") or {}).get("name", "?")
+            for q in p.get("items", [])
+            if q.get("allowed") and isinstance(q.get("quality"), dict)
+        ]
+        lines.append(
+            f"• [{p.get('id', '?')}] {p.get('name', '?')} — Allowed: {', '.join(qualities) or 'none'}"
+        )
+    return "\n".join(lines) or "No quality profiles found."
+
+
+@mcp.tool()
+def bookshelf_list_metadata_profiles() -> str:
+    """List all metadata profiles in Bookshelf (controls which release types/secondary types are tracked)."""
+    data = _bookshelf("/metadataprofile")
+    if isinstance(data, str):
+        return data
+    lines = [f"• [{p.get('id', '?')}] {p.get('name', '?')}" for p in data]
+    return "\n".join(lines) or "No metadata profiles found."
+
+
+@mcp.tool()
+def bookshelf_list_root_folders() -> str:
+    """List all configured root folders in Bookshelf with free space."""
+    data = _bookshelf("/rootfolder")
+    if isinstance(data, str):
+        return data
+    lines = []
+    for r in data:
+        free_gb = (r.get("freeSpace", 0) or 0) / 1e9
+        lines.append(f"• [{r.get('id', '?')}] {r.get('path', '?')} — {free_gb:.1f} GB free")
+    return "\n".join(lines) or "No root folders configured."
+
+
+@mcp.tool()
+def bookshelf_search_missing() -> str:
+    """Trigger Bookshelf to search for all missing monitored books."""
+    result = _bookshelf("/command", method="POST", json={"name": "MissingBookSearch"})
+    if isinstance(result, dict):
+        return "🔍 Search triggered for all missing books."
+    return str(result)
+
+
 # ── Entrypoint ──
 
 def main():
     parser = argparse.ArgumentParser(
-        description="arrstack-mcp — MCP server for Sonarr, Radarr, qBittorrent & Jellyfin"
+        description="arrstack-mcp — MCP server for Sonarr, Radarr, qBittorrent, Jellyfin & Bookshelf"
     )
     parser.add_argument(
         "--transport",
@@ -1088,11 +1331,13 @@ def main():
         enabled.append("qBittorrent")
     if JELLYFIN_URL:
         enabled.append("Jellyfin")
+    if BOOKSHELF_URL:
+        enabled.append("Bookshelf")
 
     if not enabled:
         print(
             "⚠️  No services configured. Set at least one of: "
-            "SONARR_URL, RADARR_URL, QBT_URL, JELLYFIN_URL",
+            "SONARR_URL, RADARR_URL, QBT_URL, JELLYFIN_URL, BOOKSHELF_URL",
             file=sys.stderr,
         )
         sys.exit(1)

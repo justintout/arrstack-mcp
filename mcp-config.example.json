@@ -13,7 +13,9 @@
         "QBT_PASS": "your-password",
         "JELLYFIN_URL": "http://localhost:8096",
         "PROWLARR_URL": "http://localhost:9696",
-        "PROWLARR_API_KEY": "your-api-key"
+        "PROWLARR_API_KEY": "your-api-key",
+        "BOOKSHELF_URL": "http://localhost:8787",
+        "BOOKSHELF_API_KEY": "your-api-key"
       }
     }
   }
