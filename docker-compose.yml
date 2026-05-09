@@ -18,6 +18,10 @@ services:
       - QBT_URL=http://qbittorrent:8080
       - QBT_USER=admin
       - QBT_PASS=your-qbittorrent-password
+      # ── RDTClient (Real-Debrid downloader, qBT-compatible API) ──
+      - RDT_URL=http://rdtclient:6500
+      - RDT_USER=admin
+      - RDT_PASS=your-rdtclient-password
       # ── Jellyfin ──
       - JELLYFIN_URL=http://jellyfin:8096
       - JELLYFIN_API_KEY=              # optional

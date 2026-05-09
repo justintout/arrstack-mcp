@@ -1,5 +1,5 @@
 """
-arrstack-mcp — MCP server for Sonarr, Radarr, Lidarr, Prowlarr, qBittorrent, SABnzbd, Jellyfin & Bookshelf.
+arrstack-mcp — MCP server for Sonarr, Radarr, Lidarr, Prowlarr, qBittorrent, RDTClient, SABnzbd, Jellyfin & Bookshelf.
 
 Exposes your *arr media stack as MCP tools so any AI assistant
 (Claude Desktop, Cursor, VS Code Copilot, OpenClaw, etc.) can
@@ -32,6 +32,9 @@ LIDARR_API_KEY = os.environ.get("LIDARR_API_KEY", "")
 QBT_URL = os.environ.get("QBT_URL", "").rstrip("/")
 QBT_USER = os.environ.get("QBT_USER", "admin")
 QBT_PASS = os.environ.get("QBT_PASS", "")
+RDT_URL = os.environ.get("RDT_URL", "").rstrip("/")
+RDT_USER = os.environ.get("RDT_USER", "admin")
+RDT_PASS = os.environ.get("RDT_PASS", "")
 PROWLARR_URL = os.environ.get("PROWLARR_URL", "").rstrip("/")
 PROWLARR_API_KEY = os.environ.get("PROWLARR_API_KEY", "")
 JELLYFIN_URL = os.environ.get("JELLYFIN_URL", "").rstrip("/")
@@ -45,7 +48,7 @@ mcp = FastMCP(
     "arrstack",
     instructions=(
         "Homelab media stack tools for Sonarr (TV), Radarr (Movies), Lidarr (Music), "
-        "Prowlarr (Indexers), qBittorrent (Downloads), SABnzbd (Usenet Downloads), "
+        "Prowlarr (Indexers), qBittorrent and RDTClient (Downloads), SABnzbd (Usenet Downloads), "
         "Jellyfin (Streaming), and Bookshelf (Books — a Hardcover-flavored Readarr fork). "
         "Use these tools to search, add, and manage media."
     ),
@@ -169,6 +172,89 @@ def _qbt(path: str, method: str = "GET", data=None, params=None, _retry: bool = 
             return r.text
     except (httpx.HTTPStatusError, httpx.RequestError) as e:
         return _http_error("qbt", e)
+
+
+_rdt_sid = None
+
+
+def _rdt(path: str, method: str = "GET", data=None, params=None, _retry: bool = False):
+    """Talk to RDTClient's qBittorrent-compatible API at /api/v2.
+
+    RDTClient is a .NET app that mimics qBittorrent's WebUI API, so the same
+    cookie-based session flow applies. Login may be required (depends on user
+    config). Mirrors `_qbt` discipline: single retry on 403, no recursion
+    beyond that, no logging of credentials.
+    """
+    global _rdt_sid
+    if not RDT_URL:
+        return "RDTClient is not configured. Set RDT_URL (and RDT_USER/RDT_PASS if login is enabled)."
+    logger.info("rdt %s %s", method, path)
+    try:
+        if not _rdt_sid:
+            login = httpx.post(
+                f"{RDT_URL}/api/v2/auth/login",
+                data={"username": RDT_USER, "password": RDT_PASS},
+                timeout=10,
+            )
+            login.raise_for_status()
+            # qBittorrent-compatible login returns "Ok." on success and sets a SID cookie.
+            # If login is disabled in RDTClient, the API may not require a cookie at all —
+            # treat absent SID + non-"Ok." body as a likely auth failure.
+            _rdt_sid = login.cookies.get("SID")
+            if not _rdt_sid and login.text.strip() != "Ok.":
+                logger.error("rdt login failed: %s", login.text[:80])
+                return "RDTClient login failed (check RDT_USER/RDT_PASS, or confirm login is required)."
+        r = httpx.request(
+            method,
+            f"{RDT_URL}/api/v2{path}",
+            cookies={"SID": _rdt_sid} if _rdt_sid else None,
+            data=data,
+            params=params,
+            timeout=30,
+        )
+        if r.status_code == 403:
+            _rdt_sid = None
+            if _retry:
+                logger.error("rdt 403 after retry; auth failure")
+                return "RDTClient auth failure: 403 after retry (check RDT_USER/RDT_PASS)."
+            return _rdt(path, method, data=data, params=params, _retry=True)
+        r.raise_for_status()
+        try:
+            return r.json()
+        except (ValueError, json.JSONDecodeError):
+            return r.text
+    except (httpx.HTTPStatusError, httpx.RequestError) as e:
+        return _http_error("rdt", e)
+
+
+def _rdt_native(path: str, method: str = "GET", json=None, params=None):
+    """Call RDTClient's native /api surface (e.g. /api/Settings, /api/Authentication).
+
+    Reuses the SID cookie established by `_rdt` if available. The native API may
+    require a different auth scheme on some installs; if you hit 401/403 for
+    everything here, extend this helper to do a fresh login.
+    """
+    global _rdt_sid
+    if not RDT_URL:
+        return "RDTClient is not configured. Set RDT_URL."
+    logger.info("rdt-native %s %s", method, path)
+    try:
+        cookies = {"SID": _rdt_sid} if _rdt_sid else None
+        r = httpx.request(
+            method,
+            f"{RDT_URL}{path}",
+            cookies=cookies,
+            json=json,
+            params=params,
+            timeout=30,
+        )
+        r.raise_for_status()
+        try:
+            return r.json()
+        except (ValueError, json.JSONDecodeError):
+            return r.text
+    except (httpx.HTTPStatusError, httpx.RequestError) as e:
+        return _http_error("rdt-native", e)
 
 
 def _jellyfin(path: str, params=None):
@@ -1268,6 +1354,159 @@ def qbt_transfer_info() -> str:
 
 
 # ════════════════════════════════════════════════════════════════
+#  RDTClient Tools
+# ════════════════════════════════════════════════════════════════
+#
+# RDTClient (https://github.com/rogerfar/rdt-client) is a Real-Debrid /
+# AllDebrid / Premiumize download manager that exposes a qBittorrent-compatible
+# API at /api/v2 plus a native /api surface. We use the qBT-compat surface for
+# everything the *arr stack already understands, and reach into the native API
+# for things qBT doesn't model (e.g. provider settings).
+
+
+@mcp.tool()
+def rdt_list_torrents(filter: str = "all") -> str:
+    """List torrents in RDTClient.
+
+    Args:
+        filter: Filter — "all", "downloading", "seeding", "completed", "paused", "active", "stalled".
+    """
+    data = _rdt("/torrents/info", params={"filter": filter})
+    if isinstance(data, str):
+        return data
+    if not data:
+        return "No torrents."
+    lines = []
+    for t in data:
+        progress = t.get("progress", 0) * 100
+        state = t.get("state", "?")
+        size_gb = t.get("size", 0) / 1e9
+        name = t.get("name", "?")
+        dl = t.get("dlspeed", 0) / 1e6
+        up = t.get("upspeed", 0) / 1e6
+        speed = ""
+        if dl > 0.01:
+            speed += f" ↓{dl:.1f} MB/s"
+        if up > 0.01:
+            speed += f" ↑{up:.1f} MB/s"
+        h = t.get("hash", "?")
+        lines.append(f"• [{h}] {name} — {progress:.0f}% [{state}] {size_gb:.1f} GB{speed}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def rdt_torrent_details(torrent_hash: str) -> str:
+    """Get detailed info about a specific RDTClient torrent by its hash.
+
+    Args:
+        torrent_hash: The info hash of the torrent.
+    """
+    props = _rdt("/torrents/properties", params={"hash": torrent_hash})
+    if isinstance(props, str):
+        return props
+    lines = [
+        f"Save path: {props.get('save_path', '?')}",
+        f"Total size: {props.get('total_size', 0) / 1e9:.2f} GB",
+        f"Downloaded: {props.get('total_downloaded', 0) / 1e9:.2f} GB",
+        f"Uploaded: {props.get('total_uploaded', 0) / 1e9:.2f} GB",
+        f"Ratio: {props.get('share_ratio', 0):.2f}",
+        f"Seeds: {props.get('seeds', 0)} | Peers: {props.get('peers', 0)}",
+        f"Added on: {props.get('addition_date', '?')}",
+        f"Comment: {props.get('comment', 'N/A')}",
+    ]
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def rdt_add_magnet(magnet: str, category: str = "") -> str:
+    """Add a magnet link to RDTClient (which sends it to your debrid provider).
+
+    Args:
+        magnet: The magnet URI to add.
+        category: Optional category to assign (e.g. "tv", "movies").
+    """
+    result = _rdt("/torrents/add", method="POST", data={"urls": magnet, "category": category})
+    if isinstance(result, str) and result.strip() == "Ok.":
+        return "✅ Torrent added to RDTClient."
+    return f"Result: {result}"
+
+
+@mcp.tool()
+def rdt_pause(torrent_hashes: str) -> str:
+    """Pause one or more RDTClient torrents. Pipe-separate hashes, or use 'all'.
+
+    Args:
+        torrent_hashes: Hash, "hash1|hash2", or "all".
+    """
+    _rdt("/torrents/pause", method="POST", data={"hashes": torrent_hashes})
+    return "⏸️ Paused."
+
+
+@mcp.tool()
+def rdt_resume(torrent_hashes: str) -> str:
+    """Resume one or more RDTClient torrents. Pipe-separate hashes, or use 'all'.
+
+    Args:
+        torrent_hashes: Hash, "hash1|hash2", or "all".
+    """
+    _rdt("/torrents/resume", method="POST", data={"hashes": torrent_hashes})
+    return "▶️ Resumed."
+
+
+@mcp.tool()
+def rdt_delete(torrent_hashes: str, delete_files: bool = False) -> str:
+    """Delete one or more RDTClient torrents. Pipe-separate hashes, or use 'all'.
+
+    Args:
+        torrent_hashes: Hash, "hash1|hash2", or "all".
+        delete_files: If True, also delete downloaded files from disk.
+    """
+    _rdt(
+        "/torrents/delete",
+        method="POST",
+        data={"hashes": torrent_hashes, "deleteFiles": str(delete_files).lower()},
+    )
+    return "🗑️ Deleted." + (" (files removed)" if delete_files else " (files kept)")
+
+
+@mcp.tool()
+def rdt_provider_status() -> str:
+    """Show Real-Debrid / AllDebrid / Premiumize provider status from RDTClient.
+
+    Reads from RDTClient's native /api/Settings endpoint to surface the configured
+    debrid provider. Requires the same auth as the qBT-compat API; if your
+    RDTClient install requires login, set RDT_USER/RDT_PASS.
+    """
+    data = _rdt_native("/api/Settings")
+    if isinstance(data, str):
+        return data
+    provider = "?"
+    keys_of_interest = {}
+    if isinstance(data, dict):
+        groups = data.get("settings") if isinstance(data.get("settings"), list) else None
+        if groups:
+            for g in groups:
+                if str(g.get("key", "")).lower() == "provider":
+                    for child in g.get("children", []) or []:
+                        k = child.get("key")
+                        v = child.get("value")
+                        if k:
+                            keys_of_interest[k] = v
+                            if k.lower() == "provider":
+                                provider = v
+        else:
+            provider = data.get("Provider") or data.get("provider") or "?"
+    lines = [f"Provider: {provider}"]
+    for k, v in keys_of_interest.items():
+        if k.lower() == "provider":
+            continue
+        if any(s in k.lower() for s in ("token", "key", "password", "apikey")):
+            v = "***" if v else "(unset)"
+        lines.append(f"  {k}: {v}")
+    return "\n".join(lines)
+
+
+# ════════════════════════════════════════════════════════════════
 #  Jellyfin Tools
 # ════════════════════════════════════════════════════════════════
 
@@ -1666,7 +1905,7 @@ def bookshelf_search_missing() -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="arrstack-mcp — MCP server for Sonarr, Radarr, Lidarr, qBittorrent, SABnzbd, Jellyfin & Bookshelf"
+        description="arrstack-mcp — MCP server for Sonarr, Radarr, Lidarr, qBittorrent, RDTClient, SABnzbd, Jellyfin & Bookshelf"
     )
     parser.add_argument(
         "--transport",
@@ -1689,6 +1928,8 @@ def main():
         enabled.append("Prowlarr")
     if QBT_URL:
         enabled.append("qBittorrent")
+    if RDT_URL:
+        enabled.append("RDTClient")
     if SAB_URL:
         enabled.append("SABnzbd")
     if JELLYFIN_URL:
@@ -1699,7 +1940,7 @@ def main():
     if not enabled:
         print(
             "⚠️  No services configured. Set at least one of: "
-            "SONARR_URL, RADARR_URL, LIDARR_URL, QBT_URL, SAB_URL, JELLYFIN_URL, BOOKSHELF_URL",
+            "SONARR_URL, RADARR_URL, LIDARR_URL, QBT_URL, RDT_URL, SAB_URL, JELLYFIN_URL, BOOKSHELF_URL",
             file=sys.stderr,
         )
         sys.exit(1)

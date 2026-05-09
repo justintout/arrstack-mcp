@@ -1,6 +1,6 @@
 # 🎬 arrstack-mcp
 
-An [MCP](https://modelcontextprotocol.io/) server that gives AI assistants control over your **Sonarr**, **Radarr**, **Lidarr**, **Prowlarr**, **qBittorrent**, **SABnzbd**, **Jellyfin**, and **Bookshelf** (Hardcover-flavored Readarr fork) homelab media stack.
+An [MCP](https://modelcontextprotocol.io/) server that gives AI assistants control over your **Sonarr**, **Radarr**, **Lidarr**, **Prowlarr**, **qBittorrent**, **RDTClient**, **SABnzbd**, **Jellyfin**, and **Bookshelf** (Hardcover-flavored Readarr fork) homelab media stack.
 
 Works with **Claude Desktop**, **Cursor**, **VS Code Copilot**, **OpenClaw**, and any other MCP-compatible client.
 
@@ -17,6 +17,7 @@ Works with **Claude Desktop**, **Cursor**, **VS Code Copilot**, **OpenClaw**, an
 | **Lidarr** | List artists, search & add artists/albums, queue, missing search |
 | **Prowlarr** | List/test indexers, search releases, health check |
 | **qBittorrent** | List/pause/resume/delete torrents, add magnets, transfer stats |
+| **RDTClient** | Real-Debrid downloader: list/pause/resume/delete torrents, add magnets, provider status |
 | **SABnzbd** | Queue, history, status, pause/resume, add NZB url, speed limit |
 | **Jellyfin** | List libraries, recent additions, system info |
 | **Bookshelf** | List/search authors & books, queue, missing, profiles, health |
@@ -121,6 +122,9 @@ All configuration is done via environment variables:
 | `QBT_URL` | No | qBittorrent Web UI URL (e.g. `http://localhost:8080`) |
 | `QBT_USER` | If qBt | qBittorrent username (default: `admin`) |
 | `QBT_PASS` | If qBt | qBittorrent password |
+| `RDT_URL` | No | RDTClient base URL (e.g. `http://localhost:6500`) |
+| `RDT_USER` | If RDT login | RDTClient username (default: `admin`) |
+| `RDT_PASS` | If RDT login | RDTClient password |
 | `JELLYFIN_URL` | No | Jellyfin base URL (e.g. `http://localhost:8096`) |
 | `JELLYFIN_API_KEY` | No | Jellyfin API key (optional, for authenticated endpoints) |
 | `PROWLARR_URL` | No | Prowlarr base URL (e.g. `http://localhost:9696`) |
@@ -192,6 +196,22 @@ All configuration is done via environment variables:
 | `qbt_delete` | Delete a torrent (optionally with files) |
 | `qbt_transfer_info` | Global transfer statistics |
 
+### RDTClient (Real-Debrid Downloader)
+
+[RDTClient](https://github.com/rogerfar/rdt-client) is a Real-Debrid /
+AllDebrid / Premiumize download manager that exposes a qBittorrent-compatible
+API, so it slots into Sonarr/Radarr just like qBt.
+
+| Tool | Description |
+|------|-------------|
+| `rdt_list_torrents` | List torrents with progress and speed |
+| `rdt_torrent_details` | Get detailed torrent info |
+| `rdt_add_magnet` | Add a magnet link to your debrid provider |
+| `rdt_pause` | Pause one or more torrents |
+| `rdt_resume` | Resume one or more torrents |
+| `rdt_delete` | Delete one or more torrents (optionally with files) |
+| `rdt_provider_status` | Show configured debrid provider (Real-Debrid / AllDebrid / etc.) |
+
 ### SABnzbd (Usenet Downloads)
 
 | Tool | Description |
@@ -257,6 +277,8 @@ python server.py --transport sse --port 8000
 - **Lidarr**: Settings → General → API Key
 - **Prowlarr**: Settings → General → API Key
 - **qBittorrent**: Settings → Web UI → Authentication
+- **RDTClient**: Settings → General → Authentication (or set
+  `Authentication: None` to allow open access on a trusted network)
 - **SABnzbd**: Config → General → API Key
 - **Jellyfin**: Dashboard → API Keys → Add
 - **Bookshelf**: Settings → General → API Key (same as Readarr)
