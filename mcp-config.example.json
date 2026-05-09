@@ -8,6 +8,8 @@
         "SONARR_API_KEY": "your-api-key",
         "RADARR_URL": "http://localhost:7878",
         "RADARR_API_KEY": "your-api-key",
+        "LIDARR_URL": "http://localhost:8686",
+        "LIDARR_API_KEY": "your-api-key",
         "QBT_URL": "http://localhost:8080",
         "QBT_USER": "admin",
         "QBT_PASS": "your-password",

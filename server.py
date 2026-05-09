@@ -1,5 +1,5 @@
 """
-arrstack-mcp — MCP server for Sonarr, Radarr, Prowlarr, qBittorrent, SABnzbd & Jellyfin.
+arrstack-mcp — MCP server for Sonarr, Radarr, Lidarr, Prowlarr, qBittorrent, SABnzbd & Jellyfin.
 
 Exposes your *arr media stack as MCP tools so any AI assistant
 (Claude Desktop, Cursor, VS Code Copilot, OpenClaw, etc.) can
@@ -27,6 +27,8 @@ SONARR_URL = os.environ.get("SONARR_URL", "").rstrip("/")
 SONARR_API_KEY = os.environ.get("SONARR_API_KEY", "")
 RADARR_URL = os.environ.get("RADARR_URL", "").rstrip("/")
 RADARR_API_KEY = os.environ.get("RADARR_API_KEY", "")
+LIDARR_URL = os.environ.get("LIDARR_URL", "").rstrip("/")
+LIDARR_API_KEY = os.environ.get("LIDARR_API_KEY", "")
 QBT_URL = os.environ.get("QBT_URL", "").rstrip("/")
 QBT_USER = os.environ.get("QBT_USER", "admin")
 QBT_PASS = os.environ.get("QBT_PASS", "")
@@ -40,7 +42,7 @@ SAB_API_KEY = os.environ.get("SAB_API_KEY", "")
 mcp = FastMCP(
     "arrstack",
     instructions=(
-        "Homelab media stack tools for Sonarr (TV), Radarr (Movies), "
+        "Homelab media stack tools for Sonarr (TV), Radarr (Movies), Lidarr (Music), "
         "Prowlarr (Indexers), qBittorrent (Downloads), SABnzbd (Usenet Downloads), "
         "and Jellyfin (Streaming). "
         "Use these tools to search, add, and manage media."
@@ -102,6 +104,25 @@ def _radarr(path: str, method: str = "GET", json=None, params=None):
         return r.json()
     except (httpx.HTTPStatusError, httpx.RequestError) as e:
         return _http_error("radarr", e)
+
+
+def _lidarr(path: str, method: str = "GET", json=None, params=None):
+    if not LIDARR_URL:
+        return "Lidarr is not configured. Set LIDARR_URL and LIDARR_API_KEY."
+    logger.info("lidarr %s %s", method, path)
+    try:
+        r = httpx.request(
+            method,
+            f"{LIDARR_URL}/api/v1{path}",
+            headers={"X-Api-Key": LIDARR_API_KEY},
+            json=json,
+            params=params,
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()
+    except (httpx.HTTPStatusError, httpx.RequestError) as e:
+        return _http_error("lidarr", e)
 
 
 _qbt_sid = None
@@ -789,6 +810,219 @@ def radarr_search_missing(movie_ids: str = "") -> str:
 
 
 # ════════════════════════════════════════════════════════════════
+#  Lidarr Tools
+# ════════════════════════════════════════════════════════════════
+
+
+@mcp.tool()
+def lidarr_list_artists() -> str:
+    """List all artists in Lidarr with monitoring status, album counts, and disk usage."""
+    data = _lidarr("/artist")
+    if isinstance(data, str):
+        return data
+    lines = []
+    for a in sorted(data, key=lambda x: x.get("artistName", "")):
+        stats = a.get("statistics", {})
+        have = stats.get("trackFileCount", 0)
+        total = stats.get("trackCount", 0)
+        albums = stats.get("albumCount", 0)
+        size_gb = stats.get("sizeOnDisk", 0) / 1e9
+        icon = "✅" if a.get("monitored") else "⏸️"
+        lines.append(
+            f"{icon} [{a['id']}] {a.get('artistName', '?')} — "
+            f"{albums} albums, {have}/{total} tracks, {size_gb:.1f} GB"
+        )
+    return "\n".join(lines) or "No artists found."
+
+
+@mcp.tool()
+def lidarr_get_artist(artist_id: int) -> str:
+    """Get detailed info about a specific artist by their Lidarr ID."""
+    if artist_id <= 0:
+        return "Invalid artist_id."
+    a = _lidarr(f"/artist/{artist_id}")
+    if isinstance(a, str):
+        return a
+    stats = a.get("statistics", {})
+    lines = [
+        f"Name: {a.get('artistName', '?')}",
+        f"Status: {a.get('status', '?')}",
+        f"Monitored: {a.get('monitored', False)}",
+        f"Albums: {stats.get('albumCount', 0)}",
+        f"Tracks: {stats.get('trackFileCount', 0)}/{stats.get('trackCount', 0)}",
+        f"Size: {stats.get('sizeOnDisk', 0) / 1e9:.1f} GB",
+        f"Path: {a.get('path', '?')}",
+        f"MusicBrainz: {a.get('foreignArtistId', '?')}",
+        f"Overview: {(a.get('overview') or 'N/A')[:300]}",
+    ]
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def lidarr_search(term: str) -> str:
+    """Search for an artist to add to Lidarr. Returns artist name and MusicBrainz ID."""
+    data = _lidarr("/artist/lookup", params={"term": term})
+    if isinstance(data, str):
+        return data
+    lines = []
+    for r in data[:10]:
+        overview = (r.get("overview") or "No description.")[:150]
+        lines.append(
+            f"• {r.get('artistName', '?')} "
+            f"[mbId: {r.get('foreignArtistId', '?')}]\n  {overview}"
+        )
+    return "\n".join(lines) or "No results found."
+
+
+@mcp.tool()
+def lidarr_search_album(term: str) -> str:
+    """Search for an album in Lidarr's metadata source. Returns album title, artist, and MusicBrainz ID."""
+    data = _lidarr("/album/lookup", params={"term": term})
+    if isinstance(data, str):
+        return data
+    lines = []
+    for r in data[:10]:
+        title = r.get("title", "?")
+        artist = r.get("artist", {}).get("artistName", "?") if isinstance(r.get("artist"), dict) else "?"
+        release = (r.get("releaseDate") or "?")[:10]
+        lines.append(
+            f"• {title} — {artist} ({release}) "
+            f"[mbId: {r.get('foreignAlbumId', '?')}]"
+        )
+    return "\n".join(lines) or "No results found."
+
+
+@mcp.tool()
+def lidarr_add_artist(
+    artist_name: str,
+    quality_profile_id: int,
+    metadata_profile_id: int,
+    root_folder_path: str,
+    monitored: bool = True,
+) -> str:
+    """Add an artist to Lidarr by name. Use lidarr_search to find the artist first.
+
+    Args:
+        artist_name: Artist name to look up and add.
+        quality_profile_id: Quality profile (use lidarr_list_quality_profiles).
+        metadata_profile_id: Metadata profile (use lidarr_list_metadata_profiles).
+        root_folder_path: Root folder path (use lidarr_list_root_folders).
+        monitored: Whether to monitor the artist (default: True).
+    """
+    lookup = _lidarr("/artist/lookup", params={"term": artist_name})
+    if isinstance(lookup, str):
+        return lookup
+    if not lookup:
+        return "Artist not found."
+    artist_data = lookup[0]
+    artist_data.update(
+        {
+            "qualityProfileId": quality_profile_id,
+            "metadataProfileId": metadata_profile_id,
+            "rootFolderPath": root_folder_path,
+            "monitored": monitored,
+            "addOptions": {"monitor": "all", "searchForMissingAlbums": True},
+        }
+    )
+    result = _lidarr("/artist", method="POST", json=artist_data)
+    if isinstance(result, dict):
+        return f"✅ Added: {result.get('artistName', '?')}"
+    return str(result)
+
+
+@mcp.tool()
+def lidarr_list_quality_profiles() -> str:
+    """List all quality profiles in Lidarr with their allowed qualities."""
+    data = _lidarr("/qualityprofile")
+    if isinstance(data, str):
+        return data
+    lines = []
+    for p in data:
+        qualities = [
+            q.get("quality", q).get("name", "?")
+            for q in p.get("items", [])
+            if q.get("allowed")
+        ]
+        lines.append(
+            f"• [{p['id']}] {p['name']} — Allowed: {', '.join(qualities) or 'none'}"
+        )
+    return "\n".join(lines) or "No quality profiles found."
+
+
+@mcp.tool()
+def lidarr_list_metadata_profiles() -> str:
+    """List all metadata profiles in Lidarr (controls which release types/secondary types are tracked)."""
+    data = _lidarr("/metadataprofile")
+    if isinstance(data, str):
+        return data
+    lines = []
+    for p in data:
+        lines.append(f"• [{p['id']}] {p.get('name', '?')}")
+    return "\n".join(lines) or "No metadata profiles found."
+
+
+@mcp.tool()
+def lidarr_list_root_folders() -> str:
+    """List all configured root folders in Lidarr with free space."""
+    data = _lidarr("/rootfolder")
+    if isinstance(data, str):
+        return data
+    lines = []
+    for r in data:
+        free_gb = r.get("freeSpace", 0) / 1e9
+        lines.append(f"• [{r.get('id', '?')}] {r.get('path', '?')} — {free_gb:.1f} GB free")
+    return "\n".join(lines) or "No root folders configured."
+
+
+@mcp.tool()
+def lidarr_queue() -> str:
+    """Show the current Lidarr download queue with status and queue IDs for each item."""
+    data = _lidarr("/queue", params={"pageSize": 50, "includeUnknownArtistItems": "true"})
+    if isinstance(data, str):
+        return data
+    records = data.get("records", []) if isinstance(data, dict) else []
+    lines = []
+    for r in records:
+        title = r.get("title", "?")
+        status = r.get("status", "?")
+        sizeleft = r.get("sizeleft", 0) / 1e9
+        lines.append(f"• [queueId: {r['id']}] {title} — {status} ({sizeleft:.1f} GB remaining)")
+    return "\n".join(lines) or "Queue is empty."
+
+
+@mcp.tool()
+def lidarr_delete_queue_item(queue_id: int, blocklist: bool = True) -> str:
+    """Remove an item from the Lidarr download queue.
+
+    Args:
+        queue_id: Queue item ID (use lidarr_queue to find it).
+        blocklist: If True, adds the release to the blocklist so it won't be grabbed again.
+    """
+    if queue_id <= 0:
+        return "Invalid queue_id."
+    try:
+        r = httpx.delete(
+            f"{LIDARR_URL}/api/v1/queue/{queue_id}",
+            headers={"X-Api-Key": LIDARR_API_KEY},
+            params={"removeFromClient": "true", "blocklist": str(blocklist).lower()},
+            timeout=30,
+        )
+        r.raise_for_status()
+        return f"✅ Removed from queue." + (" (blocklisted)" if blocklist else "")
+    except httpx.HTTPStatusError as e:
+        return f"❌ Failed: {e.response.status_code} — {e.response.text[:200]}"
+
+
+@mcp.tool()
+def lidarr_search_missing() -> str:
+    """Trigger a search for all missing albums in Lidarr."""
+    result = _lidarr("/command", method="POST", json={"name": "MissingAlbumSearch"})
+    if isinstance(result, dict):
+        return "🔍 Search triggered for all missing albums."
+    return str(result)
+
+
+# ════════════════════════════════════════════════════════════════
 #  Prowlarr Tools
 # ════════════════════════════════════════════════════════════════
 
@@ -1190,7 +1424,7 @@ def sab_speed_limit(percent: int) -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="arrstack-mcp — MCP server for Sonarr, Radarr, qBittorrent, SABnzbd & Jellyfin"
+        description="arrstack-mcp — MCP server for Sonarr, Radarr, Lidarr, qBittorrent, SABnzbd & Jellyfin"
     )
     parser.add_argument(
         "--transport",
@@ -1207,6 +1441,8 @@ def main():
         enabled.append("Sonarr")
     if RADARR_URL:
         enabled.append("Radarr")
+    if LIDARR_URL:
+        enabled.append("Lidarr")
     if PROWLARR_URL:
         enabled.append("Prowlarr")
     if QBT_URL:
@@ -1219,7 +1455,7 @@ def main():
     if not enabled:
         print(
             "⚠️  No services configured. Set at least one of: "
-            "SONARR_URL, RADARR_URL, QBT_URL, SAB_URL, JELLYFIN_URL",
+            "SONARR_URL, RADARR_URL, LIDARR_URL, QBT_URL, SAB_URL, JELLYFIN_URL",
             file=sys.stderr,
         )
         sys.exit(1)
