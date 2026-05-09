@@ -17,7 +17,9 @@
         "PROWLARR_URL": "http://localhost:9696",
         "PROWLARR_API_KEY": "your-api-key",
         "SAB_URL": "http://localhost:8080",
-        "SAB_API_KEY": "your-api-key"
+        "SAB_API_KEY": "your-api-key",
+        "BOOKSHELF_URL": "http://localhost:8787",
+        "BOOKSHELF_API_KEY": "your-api-key"
       }
     }
   }

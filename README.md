@@ -1,6 +1,6 @@
 # 🎬 arrstack-mcp
 
-An [MCP](https://modelcontextprotocol.io/) server that gives AI assistants control over your **Sonarr**, **Radarr**, **Lidarr**, **Prowlarr**, **qBittorrent**, **SABnzbd**, and **Jellyfin** homelab media stack.
+An [MCP](https://modelcontextprotocol.io/) server that gives AI assistants control over your **Sonarr**, **Radarr**, **Lidarr**, **Prowlarr**, **qBittorrent**, **SABnzbd**, **Jellyfin**, and **Bookshelf** (Hardcover-flavored Readarr fork) homelab media stack.
 
 Works with **Claude Desktop**, **Cursor**, **VS Code Copilot**, **OpenClaw**, and any other MCP-compatible client.
 
@@ -19,6 +19,7 @@ Works with **Claude Desktop**, **Cursor**, **VS Code Copilot**, **OpenClaw**, an
 | **qBittorrent** | List/pause/resume/delete torrents, add magnets, transfer stats |
 | **SABnzbd** | Queue, history, status, pause/resume, add NZB url, speed limit |
 | **Jellyfin** | List libraries, recent additions, system info |
+| **Bookshelf** | List/search authors & books, queue, missing, profiles, health |
 
 Only configure the services you use — unconfigured services are gracefully skipped.
 
@@ -126,6 +127,8 @@ All configuration is done via environment variables:
 | `PROWLARR_API_KEY` | If Prowlarr | Prowlarr API key (Settings → General) |
 | `SAB_URL` | No | SABnzbd base URL (e.g. `http://localhost:8080`) |
 | `SAB_API_KEY` | If SABnzbd | SABnzbd API key (Config → General → API Key) |
+| `BOOKSHELF_URL` | No | Bookshelf base URL (e.g. `http://localhost:8787`) |
+| `BOOKSHELF_API_KEY` | If Bookshelf | Bookshelf API key (Settings → General) |
 | `LOG_LEVEL` | No | Python logging level (default: `INFO`; e.g. `DEBUG`, `WARNING`) |
 
 ## Available Tools
@@ -212,6 +215,28 @@ All configuration is done via environment variables:
 | `jellyfin_recent` | Recently added items |
 | `jellyfin_system_info` | Server version and system info |
 
+### Bookshelf (Books — Hardcover-flavored Readarr fork)
+
+Bookshelf is [pennydreadful/bookshelf](https://github.com/pennydreadful/bookshelf),
+a fork of Readarr that uses [hardcover.app](https://hardcover.app) as its
+metadata provider. It exposes the standard Readarr v1 API, so these tools
+behave like the Sonarr/Radarr/Lidarr equivalents.
+
+| Tool | Description |
+|------|-------------|
+| `bookshelf_health` | Version + active health-check issues |
+| `bookshelf_list_authors` | List monitored authors with book counts and disk usage |
+| `bookshelf_get_author` | Detailed info for an author by ID |
+| `bookshelf_search_author` | Search Hardcover for an author |
+| `bookshelf_search_book` | Search Hardcover for a book |
+| `bookshelf_list_books` | List all tracked books |
+| `bookshelf_queue` | Current download queue |
+| `bookshelf_wanted_missing` | Books flagged as missing |
+| `bookshelf_list_quality_profiles` | Quality profiles |
+| `bookshelf_list_metadata_profiles` | Metadata profiles |
+| `bookshelf_list_root_folders` | Root folders with free space |
+| `bookshelf_search_missing` | Trigger a search for all missing books |
+
 ## Transport Options
 
 ```bash
@@ -234,6 +259,7 @@ python server.py --transport sse --port 8000
 - **qBittorrent**: Settings → Web UI → Authentication
 - **SABnzbd**: Config → General → API Key
 - **Jellyfin**: Dashboard → API Keys → Add
+- **Bookshelf**: Settings → General → API Key (same as Readarr)
 
 ## Security
 

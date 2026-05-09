@@ -27,6 +27,9 @@ services:
       # ── SABnzbd ──
       - SAB_URL=http://sabnzbd:8080
       - SAB_API_KEY=your-sabnzbd-api-key
+      # ── Bookshelf (Hardcover-flavored Readarr fork) ──
+      - BOOKSHELF_URL=http://bookshelf:8787
+      - BOOKSHELF_API_KEY=your-bookshelf-api-key
     restart: unless-stopped
     # Put this on the same Docker network as your *arr stack:
     # networks:
