@@ -1,6 +1,6 @@
 # 🎬 arrstack-mcp
 
-An [MCP](https://modelcontextprotocol.io/) server that gives AI assistants control over your **Sonarr**, **Radarr**, **Prowlarr**, **qBittorrent**, and **Jellyfin** homelab media stack.
+An [MCP](https://modelcontextprotocol.io/) server that gives AI assistants control over your **Sonarr**, **Radarr**, **Lidarr**, **Prowlarr**, **qBittorrent**, and **Jellyfin** homelab media stack.
 
 Works with **Claude Desktop**, **Cursor**, **VS Code Copilot**, **OpenClaw**, and any other MCP-compatible client.
 
@@ -14,6 +14,7 @@ Works with **Claude Desktop**, **Cursor**, **VS Code Copilot**, **OpenClaw**, an
 |---------|-------|
 | **Sonarr** | List series, search & add shows, upcoming episodes, download queue |
 | **Radarr** | List movies, search & add movies, download queue |
+| **Lidarr** | List artists, search & add artists/albums, queue, missing search |
 | **Prowlarr** | List/test indexers, search releases, health check |
 | **qBittorrent** | List/pause/resume/delete torrents, add magnets, transfer stats |
 | **Jellyfin** | List libraries, recent additions, system info |
@@ -113,6 +114,8 @@ All configuration is done via environment variables:
 | `SONARR_API_KEY` | If Sonarr | Sonarr API key (Settings → General) |
 | `RADARR_URL` | No | Radarr base URL (e.g. `http://localhost:7878`) |
 | `RADARR_API_KEY` | If Radarr | Radarr API key (Settings → General) |
+| `LIDARR_URL` | No | Lidarr base URL (e.g. `http://localhost:8686`) |
+| `LIDARR_API_KEY` | If Lidarr | Lidarr API key (Settings → General) |
 | `QBT_URL` | No | qBittorrent Web UI URL (e.g. `http://localhost:8080`) |
 | `QBT_USER` | If qBt | qBittorrent username (default: `admin`) |
 | `QBT_PASS` | If qBt | qBittorrent password |
@@ -144,6 +147,22 @@ All configuration is done via environment variables:
 | `radarr_search` | Search for new movies to add |
 | `radarr_add_movie` | Add a movie by TMDB ID |
 | `radarr_queue` | Show current download queue |
+
+### Lidarr (Music)
+
+| Tool | Description |
+|------|-------------|
+| `lidarr_list_artists` | List all artists with album/track counts and disk usage |
+| `lidarr_get_artist` | Get detailed info about a specific artist |
+| `lidarr_search` | Search for artists to add |
+| `lidarr_search_album` | Search for albums in metadata |
+| `lidarr_add_artist` | Add an artist by name (requires quality + metadata profile + root folder) |
+| `lidarr_list_quality_profiles` | List quality profiles |
+| `lidarr_list_metadata_profiles` | List metadata profiles |
+| `lidarr_list_root_folders` | List root folders with free space |
+| `lidarr_queue` | Show current download queue |
+| `lidarr_delete_queue_item` | Remove an item from the queue (optionally blocklist) |
+| `lidarr_search_missing` | Trigger search for all missing albums |
 
 ### Prowlarr (Indexers)
 
@@ -192,6 +211,7 @@ python server.py --transport sse --port 8000
 
 - **Sonarr**: Settings → General → API Key
 - **Radarr**: Settings → General → API Key
+- **Lidarr**: Settings → General → API Key
 - **Prowlarr**: Settings → General → API Key
 - **qBittorrent**: Settings → Web UI → Authentication
 - **Jellyfin**: Dashboard → API Keys → Add

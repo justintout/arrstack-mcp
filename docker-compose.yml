@@ -11,6 +11,9 @@ services:
       # ── Radarr ──
       - RADARR_URL=http://radarr:7878
       - RADARR_API_KEY=your-radarr-api-key
+      # ── Lidarr ──
+      - LIDARR_URL=http://lidarr:8686
+      - LIDARR_API_KEY=your-lidarr-api-key
       # ── qBittorrent ──
       - QBT_URL=http://qbittorrent:8080
       - QBT_USER=admin
