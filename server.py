@@ -1,5 +1,5 @@
 """
-arrstack-mcp — MCP server for Sonarr, Radarr, Prowlarr, qBittorrent & Jellyfin.
+arrstack-mcp — MCP server for Sonarr, Radarr, Prowlarr, qBittorrent, SABnzbd & Jellyfin.
 
 Exposes your *arr media stack as MCP tools so any AI assistant
 (Claude Desktop, Cursor, VS Code Copilot, OpenClaw, etc.) can
@@ -34,12 +34,15 @@ PROWLARR_URL = os.environ.get("PROWLARR_URL", "").rstrip("/")
 PROWLARR_API_KEY = os.environ.get("PROWLARR_API_KEY", "")
 JELLYFIN_URL = os.environ.get("JELLYFIN_URL", "").rstrip("/")
 JELLYFIN_API_KEY = os.environ.get("JELLYFIN_API_KEY", "")
+SAB_URL = os.environ.get("SAB_URL", "").rstrip("/")
+SAB_API_KEY = os.environ.get("SAB_API_KEY", "")
 
 mcp = FastMCP(
     "arrstack",
     instructions=(
         "Homelab media stack tools for Sonarr (TV), Radarr (Movies), "
-        "Prowlarr (Indexers), qBittorrent (Downloads), and Jellyfin (Streaming). "
+        "Prowlarr (Indexers), qBittorrent (Downloads), SABnzbd (Usenet Downloads), "
+        "and Jellyfin (Streaming). "
         "Use these tools to search, add, and manage media."
     ),
     # DNS rebinding protection is enabled by default for HTTP/SSE transports.
@@ -177,6 +180,24 @@ def _prowlarr(path: str, method: str = "GET", json=None, params=None):
         return r.json()
     except (httpx.HTTPStatusError, httpx.RequestError) as e:
         return _http_error("prowlarr", e)
+
+
+def _sab(mode: str, **params):
+    if not SAB_URL or not SAB_API_KEY:
+        return "SABnzbd is not configured. Set SAB_URL and SAB_API_KEY."
+    # Log only the mode, never the apikey or values that may include secrets.
+    logger.info("sab GET mode=%s", mode)
+    try:
+        query = {"mode": mode, "apikey": SAB_API_KEY, "output": "json"}
+        # Drop None values; pass everything else as-is so httpx URL-encodes.
+        for k, v in params.items():
+            if v is not None:
+                query[k] = v
+        r = httpx.get(f"{SAB_URL}/sabnzbd/api", params=query, timeout=30)
+        r.raise_for_status()
+        return r.json()
+    except (httpx.HTTPStatusError, httpx.RequestError) as e:
+        return _http_error("sab", e)
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1061,11 +1082,115 @@ def jellyfin_scan_library() -> str:
         return f"❌ Failed: {e.response.status_code} — {e.response.text[:200]}"
 
 
+# ════════════════════════════════════════════════════════════════
+#  SABnzbd Tools
+# ════════════════════════════════════════════════════════════════
+
+
+@mcp.tool()
+def sab_queue() -> str:
+    """Show the current SABnzbd download queue."""
+    return str(_sab("queue"))
+
+
+@mcp.tool()
+def sab_history() -> str:
+    """Show SABnzbd download history."""
+    return str(_sab("history"))
+
+
+@mcp.tool()
+def sab_status() -> str:
+    """Show SABnzbd full status (server, disk space, speed, etc.)."""
+    return str(_sab("fullstatus"))
+
+
+@mcp.tool()
+def sab_pause() -> str:
+    """Pause the entire SABnzbd queue."""
+    return str(_sab("pause"))
+
+
+@mcp.tool()
+def sab_resume() -> str:
+    """Resume the entire SABnzbd queue."""
+    return str(_sab("resume"))
+
+
+@mcp.tool()
+def sab_pause_job(nzo_id: str) -> str:
+    """Pause a specific SABnzbd queue item.
+
+    Args:
+        nzo_id: The NZO id of the queue item (use sab_queue to find it).
+    """
+    if not nzo_id:
+        return "Invalid nzo_id."
+    return str(_sab("queue", name="pause", value=nzo_id))
+
+
+@mcp.tool()
+def sab_resume_job(nzo_id: str) -> str:
+    """Resume a specific SABnzbd queue item.
+
+    Args:
+        nzo_id: The NZO id of the queue item.
+    """
+    if not nzo_id:
+        return "Invalid nzo_id."
+    return str(_sab("queue", name="resume", value=nzo_id))
+
+
+@mcp.tool()
+def sab_delete_job(nzo_id: str, delete_files: bool = False) -> str:
+    """Delete a job from the SABnzbd queue.
+
+    Args:
+        nzo_id: The NZO id of the queue item.
+        delete_files: If True, also delete any files already downloaded.
+    """
+    if not nzo_id:
+        return "Invalid nzo_id."
+    params = {"name": "delete", "value": nzo_id}
+    if delete_files:
+        params["del_files"] = 1
+    return str(_sab("queue", **params))
+
+
+@mcp.tool()
+def sab_add_url(nzb_url: str, category: str = "", priority: int = -100) -> str:
+    """Add an NZB by URL to SABnzbd.
+
+    Args:
+        nzb_url: URL pointing at an NZB file.
+        category: Optional SAB category (default: empty = default category).
+        priority: SABnzbd priority (-100 = default, -2..2 supported).
+    """
+    if not nzb_url:
+        return "Invalid nzb_url."
+    params = {"name": nzb_url, "priority": priority}
+    if category:
+        params["cat"] = category
+    return str(_sab("addurl", **params))
+
+
+@mcp.tool()
+def sab_speed_limit(percent: int) -> str:
+    """Set the SABnzbd global speed limit as a percentage of the configured max.
+
+    Args:
+        percent: Speed-limit percentage, 0..100 (0 = pause-by-throttle, 100 = full speed).
+    """
+    if not isinstance(percent, int) or percent < 0 or percent > 100:
+        return "Invalid percent (must be an integer 0..100)."
+    return str(_sab("config", name="speedlimit", value=percent))
+
+
 # ── Entrypoint ──
 
 def main():
     parser = argparse.ArgumentParser(
-        description="arrstack-mcp — MCP server for Sonarr, Radarr, qBittorrent & Jellyfin"
+        description="arrstack-mcp — MCP server for Sonarr, Radarr, qBittorrent, SABnzbd & Jellyfin"
     )
     parser.add_argument(
         "--transport",
@@ -1086,13 +1211,15 @@ def main():
         enabled.append("Prowlarr")
     if QBT_URL:
         enabled.append("qBittorrent")
+    if SAB_URL:
+        enabled.append("SABnzbd")
     if JELLYFIN_URL:
         enabled.append("Jellyfin")
 
     if not enabled:
         print(
             "⚠️  No services configured. Set at least one of: "
-            "SONARR_URL, RADARR_URL, QBT_URL, JELLYFIN_URL",
+            "SONARR_URL, RADARR_URL, QBT_URL, SAB_URL, JELLYFIN_URL",
             file=sys.stderr,
         )
         sys.exit(1)

@@ -21,6 +21,9 @@ services:
       # ── Prowlarr ──
       - PROWLARR_URL=http://prowlarr:9696
       - PROWLARR_API_KEY=your-prowlarr-api-key
+      # ── SABnzbd ──
+      - SAB_URL=http://sabnzbd:8080
+      - SAB_API_KEY=your-sabnzbd-api-key
     restart: unless-stopped
     # Put this on the same Docker network as your *arr stack:
     # networks:
