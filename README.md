@@ -120,6 +120,7 @@ All configuration is done via environment variables:
 | `JELLYFIN_API_KEY` | No | Jellyfin API key (optional, for authenticated endpoints) |
 | `PROWLARR_URL` | No | Prowlarr base URL (e.g. `http://localhost:9696`) |
 | `PROWLARR_API_KEY` | If Prowlarr | Prowlarr API key (Settings → General) |
+| `LOG_LEVEL` | No | Python logging level (default: `INFO`; e.g. `DEBUG`, `WARNING`) |
 
 ## Available Tools
 
@@ -194,6 +195,35 @@ python server.py --transport sse --port 8000
 - **Prowlarr**: Settings → General → API Key
 - **qBittorrent**: Settings → Web UI → Authentication
 - **Jellyfin**: Dashboard → API Keys → Add
+
+## Security
+
+The HTTP/SSE transports listen on `0.0.0.0:8000` by default to match the
+upstream community behavior, but the MCP protocol itself has **no built-in
+authentication**. Anyone who can reach the port can call your *arr stack with
+your API keys. Choose one of the following deployment patterns:
+
+- **Reverse proxy with auth (recommended for LAN/WAN exposure).** Bind the
+  server to `127.0.0.1` (`--host 127.0.0.1`) and front it with Caddy / nginx /
+  Traefik enforcing basic auth, OAuth2-proxy, or mTLS. Configure
+  `TransportSecuritySettings(allowed_hosts=[...])` for your public hostname if
+  you need to relax the default DNS-rebinding protection.
+- **Tailscale-only exposure.** Bind to the Tailscale interface (or
+  `127.0.0.1` and run `tailscale serve`) so only devices on your tailnet can
+  reach the MCP server.
+- **stdio for desktop clients.** When using Claude Desktop / Cursor / VS Code
+  on the same machine, prefer the default `stdio` transport — no network
+  surface at all.
+
+Other security notes:
+
+- DNS-rebinding protection is **enabled** by default for HTTP/SSE transports.
+  If you serve under a custom hostname, set `allowed_hosts` accordingly in
+  `TransportSecuritySettings` (see `server.py`).
+- The Docker image runs as a non-root `appuser` (uid 1000).
+- API keys are read from environment variables and are never logged. Set
+  `LOG_LEVEL=DEBUG` for verbose request logging (paths and methods only — no
+  headers or bodies). Default level is `INFO`.
 
 ## License
 

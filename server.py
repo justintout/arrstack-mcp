@@ -8,12 +8,17 @@ search, add, and manage your media library.
 
 import os
 import sys
+import json
 import argparse
 import logging
 import httpx
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+)
 logger = logging.getLogger("arrstack-mcp")
 
 # ── Configuration ──
@@ -37,89 +42,141 @@ mcp = FastMCP(
         "Prowlarr (Indexers), qBittorrent (Downloads), and Jellyfin (Streaming). "
         "Use these tools to search, add, and manage media."
     ),
-    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    # DNS rebinding protection is enabled by default for HTTP/SSE transports.
+    # If you front the server with a reverse proxy or expose it under a custom
+    # hostname, configure the allowed hosts via TransportSecuritySettings
+    # (e.g. allowed_hosts=["arrstack-mcp.example.com"]). See README "Security".
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True),
 )
 
 # ── HTTP helpers ──
 
 
-def _sonarr(path: str, method: str = "GET", json=None):
+def _http_error(service: str, exc: Exception) -> str:
+    """Format an HTTP error consistently. Never include API keys/headers."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        body = exc.response.text[:200] if exc.response is not None else ""
+        logger.error("%s HTTP %s: %s", service, status, body)
+        return f"{service} request failed: HTTP {status} — {body}"
+    logger.error("%s request error: %s", service, exc)
+    return f"{service} request error: {exc}"
+
+
+def _sonarr(path: str, method: str = "GET", json=None, params=None):
     if not SONARR_URL:
         return "Sonarr is not configured. Set SONARR_URL and SONARR_API_KEY."
-    r = httpx.request(
-        method,
-        f"{SONARR_URL}/api/v3{path}",
-        headers={"X-Api-Key": SONARR_API_KEY},
-        json=json,
-        timeout=30,
-    )
-    r.raise_for_status()
-    return r.json()
+    logger.info("sonarr %s %s", method, path)
+    try:
+        r = httpx.request(
+            method,
+            f"{SONARR_URL}/api/v3{path}",
+            headers={"X-Api-Key": SONARR_API_KEY},
+            json=json,
+            params=params,
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()
+    except (httpx.HTTPStatusError, httpx.RequestError) as e:
+        return _http_error("sonarr", e)
 
 
-def _radarr(path: str, method: str = "GET", json=None):
+def _radarr(path: str, method: str = "GET", json=None, params=None):
     if not RADARR_URL:
         return "Radarr is not configured. Set RADARR_URL and RADARR_API_KEY."
-    r = httpx.request(
-        method,
-        f"{RADARR_URL}/api/v3{path}",
-        headers={"X-Api-Key": RADARR_API_KEY},
-        json=json,
-        timeout=30,
-    )
-    r.raise_for_status()
-    return r.json()
+    logger.info("radarr %s %s", method, path)
+    try:
+        r = httpx.request(
+            method,
+            f"{RADARR_URL}/api/v3{path}",
+            headers={"X-Api-Key": RADARR_API_KEY},
+            json=json,
+            params=params,
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()
+    except (httpx.HTTPStatusError, httpx.RequestError) as e:
+        return _http_error("radarr", e)
 
 
 _qbt_sid = None
 
 
-def _qbt(path: str, method: str = "GET", data=None):
+def _qbt(path: str, method: str = "GET", data=None, params=None, _retry: bool = False):
     global _qbt_sid
     if not QBT_URL:
         return "qBittorrent is not configured. Set QBT_URL and QBT_PASS."
-    if not _qbt_sid:
-        r = httpx.post(
-            f"{QBT_URL}/api/v2/auth/login",
-            data={"username": QBT_USER, "password": QBT_PASS},
-            timeout=10,
-        )
-        _qbt_sid = r.cookies.get("SID")
-    r = httpx.request(
-        method, f"{QBT_URL}/api/v2{path}", cookies={"SID": _qbt_sid}, data=data, timeout=30
-    )
-    if r.status_code == 403:
-        _qbt_sid = None
-        return _qbt(path, method, data)
+    logger.info("qbt %s %s", method, path)
     try:
-        return r.json()
-    except Exception:
-        return r.text
+        if not _qbt_sid:
+            login = httpx.post(
+                f"{QBT_URL}/api/v2/auth/login",
+                data={"username": QBT_USER, "password": QBT_PASS},
+                timeout=10,
+            )
+            login.raise_for_status()
+            _qbt_sid = login.cookies.get("SID")
+            if not _qbt_sid:
+                logger.error("qbt login failed: no SID cookie returned")
+                return "qBittorrent login failed: no SID cookie returned (check QBT_USER/QBT_PASS)."
+        r = httpx.request(
+            method,
+            f"{QBT_URL}/api/v2{path}",
+            cookies={"SID": _qbt_sid},
+            data=data,
+            params=params,
+            timeout=30,
+        )
+        if r.status_code == 403:
+            # Session likely expired. Retry once with a fresh login; never recurse further.
+            _qbt_sid = None
+            if _retry:
+                logger.error("qbt 403 after retry; auth failure")
+                return "qBittorrent auth failure: 403 after retry (check credentials)."
+            return _qbt(path, method, data=data, params=params, _retry=True)
+        r.raise_for_status()
+        try:
+            return r.json()
+        except (ValueError, json.JSONDecodeError):
+            return r.text
+    except (httpx.HTTPStatusError, httpx.RequestError) as e:
+        return _http_error("qbt", e)
 
 
-def _jellyfin(path: str):
+def _jellyfin(path: str, params=None):
     if not JELLYFIN_URL:
         return "Jellyfin is not configured. Set JELLYFIN_URL."
+    logger.info("jellyfin GET %s", path)
     headers = {}
     if JELLYFIN_API_KEY:
         headers["X-Emby-Token"] = JELLYFIN_API_KEY
-    r = httpx.get(f"{JELLYFIN_URL}{path}", headers=headers, timeout=30)
-    r.raise_for_status()
-    return r.json()
+    try:
+        r = httpx.get(f"{JELLYFIN_URL}{path}", headers=headers, params=params, timeout=30)
+        r.raise_for_status()
+        return r.json()
+    except (httpx.HTTPStatusError, httpx.RequestError) as e:
+        return _http_error("jellyfin", e)
 
 
-def _prowlarr(path: str, method: str = "GET", json=None):
+def _prowlarr(path: str, method: str = "GET", json=None, params=None):
     if not PROWLARR_URL:
         return "Prowlarr is not configured. Set PROWLARR_URL and PROWLARR_API_KEY."
-    r = httpx.request(
-        method,
-        f"{PROWLARR_URL}/api/v1{path}",
-        headers={"X-Api-Key": PROWLARR_API_KEY},
-        json=json,
-        timeout=30,
-    )
-    r.raise_for_status()
-    return r.json()
+    logger.info("prowlarr %s %s", method, path)
+    try:
+        r = httpx.request(
+            method,
+            f"{PROWLARR_URL}/api/v1{path}",
+            headers={"X-Api-Key": PROWLARR_API_KEY},
+            json=json,
+            params=params,
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()
+    except (httpx.HTTPStatusError, httpx.RequestError) as e:
+        return _http_error("prowlarr", e)
 
 
 # ════════════════════════════════════════════════════════════════
@@ -150,6 +207,8 @@ def sonarr_list_series() -> str:
 @mcp.tool()
 def sonarr_get_series(series_id: int) -> str:
     """Get detailed info about a specific TV series by its Sonarr ID."""
+    if series_id <= 0:
+        return "Invalid series_id."
     s = _sonarr(f"/series/{series_id}")
     if isinstance(s, str):
         return s
@@ -171,7 +230,7 @@ def sonarr_get_series(series_id: int) -> str:
 @mcp.tool()
 def sonarr_search(term: str) -> str:
     """Search for a TV series to add to Sonarr. Returns title, year, TVDB ID, and overview."""
-    data = _sonarr(f"/series/lookup?term={term}")
+    data = _sonarr("/series/lookup", params={"term": term})
     if isinstance(data, str):
         return data
     lines = []
@@ -195,7 +254,7 @@ def sonarr_add_series(
         quality_profile_id: Quality profile to use (default: 1).
         monitor: Episodes to monitor — "all", "future", "missing", "pilot", "none".
     """
-    lookup = _sonarr(f"/series/lookup?term=tvdb:{tvdb_id}")
+    lookup = _sonarr("/series/lookup", params={"term": f"tvdb:{tvdb_id}"})
     if isinstance(lookup, str):
         return lookup
     if not lookup:
@@ -371,6 +430,8 @@ def sonarr_delete_queue_item(queue_id: int, blocklist: bool = True) -> str:
         queue_id: Queue item ID (use sonarr_queue to find it).
         blocklist: If True, adds the release to the blocklist so it won't be grabbed again.
     """
+    if queue_id <= 0:
+        return "Invalid queue_id."
     try:
         r = httpx.delete(
             f"{SONARR_URL}/api/v3/queue/{queue_id}",
@@ -392,6 +453,8 @@ def sonarr_delete_episode_file(episode_file_id: int) -> str:
     Args:
         episode_file_id: Episode file ID (use sonarr_get_series to find file IDs).
     """
+    if episode_file_id <= 0:
+        return "Invalid episode_file_id."
     try:
         r = httpx.delete(
             f"{SONARR_URL}/api/v3/episodefile/{episode_file_id}",
@@ -446,6 +509,8 @@ def radarr_list_movies() -> str:
 @mcp.tool()
 def radarr_get_movie(movie_id: int) -> str:
     """Get detailed info about a specific movie by its Radarr ID."""
+    if movie_id <= 0:
+        return "Invalid movie_id."
     m = _radarr(f"/movie/{movie_id}")
     if isinstance(m, str):
         return m
@@ -466,7 +531,7 @@ def radarr_get_movie(movie_id: int) -> str:
 @mcp.tool()
 def radarr_search(term: str) -> str:
     """Search for a movie to add to Radarr. Returns title, year, TMDB ID, and overview."""
-    data = _radarr(f"/movie/lookup?term={term}")
+    data = _radarr("/movie/lookup", params={"term": term})
     if isinstance(data, str):
         return data
     lines = []
@@ -636,6 +701,8 @@ def radarr_delete_queue_item(queue_id: int, blocklist: bool = True) -> str:
         queue_id: Queue item ID (use radarr_queue to find it).
         blocklist: If True, adds the release to the blocklist so it won't be grabbed again.
     """
+    if queue_id <= 0:
+        return "Invalid queue_id."
     try:
         r = httpx.delete(
             f"{RADARR_URL}/api/v3/queue/{queue_id}",
@@ -657,6 +724,8 @@ def radarr_delete_movie_file(movie_id: int) -> str:
     Args:
         movie_id: Radarr movie ID (use radarr_list_movies or radarr_get_movie to find it).
     """
+    if movie_id <= 0:
+        return "Invalid movie_id."
     movie = _radarr(f"/movie/{movie_id}")
     if isinstance(movie, str):
         return movie
@@ -726,11 +795,12 @@ def prowlarr_test_indexer(indexer_id: int) -> str:
     Args:
         indexer_id: The indexer ID (use prowlarr_list_indexers to find it).
     """
-    try:
-        _prowlarr(f"/indexer/{indexer_id}/test", method="POST")
-        return "✅ Indexer test passed."
-    except httpx.HTTPStatusError as e:
-        return f"❌ Indexer test failed: {e.response.status_code} — {e.response.text[:200]}"
+    if indexer_id <= 0:
+        return "Invalid indexer_id."
+    result = _prowlarr(f"/indexer/{indexer_id}/test", method="POST")
+    if isinstance(result, str) and result.startswith("prowlarr "):
+        return f"❌ Indexer test failed: {result}"
+    return "✅ Indexer test passed."
 
 
 @mcp.tool()
@@ -743,11 +813,11 @@ def prowlarr_test_all_indexers() -> str:
     for idx in data:
         if not idx.get("enable"):
             continue
-        try:
-            _prowlarr(f"/indexer/{idx['id']}/test", method="POST")
+        result = _prowlarr(f"/indexer/{idx['id']}/test", method="POST")
+        if isinstance(result, str) and result.startswith("prowlarr "):
+            results.append(f"❌ {idx['name']} — {result}")
+        else:
             results.append(f"✅ {idx['name']} — OK")
-        except httpx.HTTPStatusError as e:
-            results.append(f"❌ {idx['name']} — {e.response.status_code}")
     return "\n".join(results) or "No enabled indexers."
 
 
@@ -759,10 +829,10 @@ def prowlarr_search(query: str, indexer_ids: str = "") -> str:
         query: Search term.
         indexer_ids: Comma-separated indexer IDs to search (empty = all).
     """
-    params = f"/search?query={query}&type=search"
+    qparams = {"query": query, "type": "search"}
     if indexer_ids:
-        params += f"&indexerIds={indexer_ids}"
-    data = _prowlarr(params)
+        qparams["indexerIds"] = indexer_ids
+    data = _prowlarr("/search", params=qparams)
     if isinstance(data, str):
         return data
     lines = []
