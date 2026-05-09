@@ -1,6 +1,6 @@
 # 🎬 arrstack-mcp
 
-An [MCP](https://modelcontextprotocol.io/) server that gives AI assistants control over your **Sonarr**, **Radarr**, **Prowlarr**, **qBittorrent**, and **Jellyfin** homelab media stack.
+An [MCP](https://modelcontextprotocol.io/) server that gives AI assistants control over your **Sonarr**, **Radarr**, **Prowlarr**, **qBittorrent**, **SABnzbd**, and **Jellyfin** homelab media stack.
 
 Works with **Claude Desktop**, **Cursor**, **VS Code Copilot**, **OpenClaw**, and any other MCP-compatible client.
 
@@ -16,6 +16,7 @@ Works with **Claude Desktop**, **Cursor**, **VS Code Copilot**, **OpenClaw**, an
 | **Radarr** | List movies, search & add movies, download queue |
 | **Prowlarr** | List/test indexers, search releases, health check |
 | **qBittorrent** | List/pause/resume/delete torrents, add magnets, transfer stats |
+| **SABnzbd** | Queue, history, status, pause/resume, add NZB url, speed limit |
 | **Jellyfin** | List libraries, recent additions, system info |
 
 Only configure the services you use — unconfigured services are gracefully skipped.
@@ -120,6 +121,8 @@ All configuration is done via environment variables:
 | `JELLYFIN_API_KEY` | No | Jellyfin API key (optional, for authenticated endpoints) |
 | `PROWLARR_URL` | No | Prowlarr base URL (e.g. `http://localhost:9696`) |
 | `PROWLARR_API_KEY` | If Prowlarr | Prowlarr API key (Settings → General) |
+| `SAB_URL` | No | SABnzbd base URL (e.g. `http://localhost:8080`) |
+| `SAB_API_KEY` | If SABnzbd | SABnzbd API key (Config → General → API Key) |
 | `LOG_LEVEL` | No | Python logging level (default: `INFO`; e.g. `DEBUG`, `WARNING`) |
 
 ## Available Tools
@@ -167,6 +170,21 @@ All configuration is done via environment variables:
 | `qbt_delete` | Delete a torrent (optionally with files) |
 | `qbt_transfer_info` | Global transfer statistics |
 
+### SABnzbd (Usenet Downloads)
+
+| Tool | Description |
+|------|-------------|
+| `sab_queue` | Show the current download queue |
+| `sab_history` | Show download history |
+| `sab_status` | Show full server status (disk, speed, etc.) |
+| `sab_pause` | Pause the entire queue |
+| `sab_resume` | Resume the entire queue |
+| `sab_pause_job` | Pause a specific queue item by NZO id |
+| `sab_resume_job` | Resume a specific queue item by NZO id |
+| `sab_delete_job` | Delete a queue item (optionally with files) |
+| `sab_add_url` | Add an NZB by URL (with optional category/priority) |
+| `sab_speed_limit` | Set the global speed limit (0..100% of configured max) |
+
 ### Jellyfin (Media Server)
 
 | Tool | Description |
@@ -194,6 +212,7 @@ python server.py --transport sse --port 8000
 - **Radarr**: Settings → General → API Key
 - **Prowlarr**: Settings → General → API Key
 - **qBittorrent**: Settings → Web UI → Authentication
+- **SABnzbd**: Config → General → API Key
 - **Jellyfin**: Dashboard → API Keys → Add
 
 ## Security
